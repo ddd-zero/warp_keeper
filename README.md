@@ -7,8 +7,8 @@
 - 仅提供 Linux/Unix 兼容环境支持
 - 发布产物为 `musl` 静态链接二进制
 - x86_64 提供两套优化包：
-  - 基础兼容版（不启用 AVX2）
-  - AVX2 优化版（`x86-64-v3`）
+  - 基础兼容版（不启用 AVX2）：`warp-keeper-linux-x86_64-musl.tar.xz`
+  - AVX2 优化版（`x86-64-v3`）：`warp-keeper-linux-x86_64-musl-avx2.tar.xz`
 
 ## 客户端识别规则
 
@@ -89,7 +89,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ## 进程守护（不同平台）
 
-发布包内自带守护模板：
+发布包仅包含二进制文件，不再包含守护模板目录。安装脚本会按发布标签从仓库 `deploy/` 目录下载模板并注册守护：
 
 - `deploy/systemd/warp-keeper.service`：适用于 systemd 发行版（Debian/Ubuntu/CentOS 等）
 - `deploy/openrc/warp-keeper`：适用于 OpenRC 发行版（Alpine/Gentoo 等）

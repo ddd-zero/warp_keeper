@@ -9,9 +9,9 @@ OPENRC_UNIT_PATH="/etc/init.d/warp-keeper"
 
 REPO="${KEEP_WARP_REPO:-}"
 TAG="${KEEP_WARP_TAG:-}"
+INSTALL_DAEMON=1
 FORCE_AVX2=0
 FORCE_BASELINE=0
-INSTALL_DAEMON=1
 
 usage() {
   cat <<'EOF'
@@ -21,9 +21,9 @@ usage() {
 参数:
   --repo <owner/repo>  GitHub 仓库名，示例: alice/keep_warp
   --tag <tag>          指定发布标签，不传则自动安装最新 release
+  --no-daemon          只安装二进制，不自动注册守护进程
   --force-avx2         强制安装 AVX2 版本
   --force-baseline     强制安装基础兼容版本（不启用 AVX2）
-  --no-daemon          只安装二进制，不自动注册守护进程
   -h, --help           查看帮助
 EOF
 }
@@ -138,8 +138,8 @@ pick_asset_name() {
 
   case "${arch}" in
     x86_64 | amd64)
-      local baseline_asset="${PROGRAM}-linux-x86_64-musl.tar.gz"
-      local avx2_asset="${PROGRAM}-linux-x86_64-musl-avx2.tar.gz"
+      local baseline_asset="${PROGRAM}-linux-x86_64-musl.tar.xz"
+      local avx2_asset="${PROGRAM}-linux-x86_64-musl-avx2.tar.xz"
 
       if [[ "${FORCE_AVX2}" -eq 1 && "${FORCE_BASELINE}" -eq 1 ]]; then
         die "--force-avx2 与 --force-baseline 不能同时使用"
@@ -199,14 +199,12 @@ install_binary_and_assets() {
   local unpack_dir="${temp_dir}/unpack"
 
   mkdir -p "${unpack_dir}"
-  tar -xzf "${temp_dir}/${asset_name}" -C "${unpack_dir}"
+  tar -xJf "${temp_dir}/${asset_name}" -C "${unpack_dir}"
 
-  local root_dir="${unpack_dir}/${asset_name%.tar.gz}"
-  [[ -x "${root_dir}/${PROGRAM}" ]] || die "压缩包缺少可执行文件: ${PROGRAM}"
+  [[ -x "${unpack_dir}/${PROGRAM}" ]] || die "压缩包缺少可执行文件: ${PROGRAM}"
 
   install -d "${INSTALL_BIN_DIR}" "${INSTALL_CONFIG_DIR}"
-  install -m 0755 "${root_dir}/${PROGRAM}" "${INSTALL_BIN_DIR}/${PROGRAM}"
-  cp -r "${root_dir}/deploy" "${INSTALL_CONFIG_DIR}/"
+  install -m 0755 "${unpack_dir}/${PROGRAM}" "${INSTALL_BIN_DIR}/${PROGRAM}"
 
   if [[ ! -f "${INSTALL_CONFIG_DIR}/config.toml" ]]; then
     log "首次安装，初始化配置: ${INSTALL_CONFIG_DIR}/config.toml"
@@ -217,23 +215,29 @@ install_binary_and_assets() {
 }
 
 install_systemd_daemon() {
-  local deploy_root="$1"
-  install -m 0644 "${deploy_root}/systemd/warp-keeper.service" "${SYSTEMD_UNIT_PATH}"
+  local temp_dir="$1"
+  local unit_src="${temp_dir}/warp-keeper.service"
+  local unit_url="https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/systemd/warp-keeper.service"
+  curl -fL "${unit_url}" -o "${unit_src}" || return 1
+  install -m 0644 "${unit_src}" "${SYSTEMD_UNIT_PATH}"
   systemctl daemon-reload
   systemctl enable --now warp-keeper.service
   log "已启用 systemd 守护: warp-keeper.service"
 }
 
 install_openrc_daemon() {
-  local deploy_root="$1"
-  install -m 0755 "${deploy_root}/openrc/warp-keeper" "${OPENRC_UNIT_PATH}"
+  local temp_dir="$1"
+  local unit_src="${temp_dir}/warp-keeper.openrc"
+  local unit_url="https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/openrc/warp-keeper"
+  curl -fL "${unit_url}" -o "${unit_src}" || return 1
+  install -m 0755 "${unit_src}" "${OPENRC_UNIT_PATH}"
   rc-update add warp-keeper default >/dev/null 2>&1 || true
   rc-service warp-keeper restart >/dev/null 2>&1 || rc-service warp-keeper start
   log "已启用 OpenRC 守护: warp-keeper"
 }
 
 install_daemon_if_needed() {
-  local deploy_root="${INSTALL_CONFIG_DIR}/deploy"
+  local temp_dir="$1"
 
   if [[ "${INSTALL_DAEMON}" -ne 1 ]]; then
     warn "按参数要求跳过守护安装，可手动执行 ${PROGRAM} run --config ${INSTALL_CONFIG_DIR}/config.toml"
@@ -242,13 +246,17 @@ install_daemon_if_needed() {
 
   # 为什么优先 systemd：Linux 主流发行版默认是 systemd，统一运维体验更稳定。
   if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-    install_systemd_daemon "${deploy_root}"
+    if ! install_systemd_daemon "${temp_dir}"; then
+      warn "下载 systemd 守护模板失败，已完成二进制安装，请手动配置守护"
+    fi
     return
   fi
 
   # 为什么提供 OpenRC：Alpine/Gentoo 常见，属于 Linux/Unix 场景中常用替代 init。
   if command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
-    install_openrc_daemon "${deploy_root}"
+    if ! install_openrc_daemon "${temp_dir}"; then
+      warn "下载 OpenRC 守护模板失败，已完成二进制安装，请手动配置守护"
+    fi
     return
   fi
 
@@ -274,11 +282,11 @@ main() {
   asset_name="$(pick_asset_name)"
 
   # 自动策略下，若 AVX2 包不存在，回退到基础版本，避免安装被中断。
-  if [[ "${asset_name}" == "${PROGRAM}-linux-x86_64-musl-avx2.tar.gz" ]]; then
+  if [[ "${asset_name}" == "${PROGRAM}-linux-x86_64-musl-avx2.tar.xz" ]]; then
     local avx_url="https://github.com/${REPO}/releases/download/${TAG}/${asset_name}"
     if ! asset_exists "${avx_url}" && [[ "${FORCE_AVX2}" -eq 0 ]]; then
       warn "未找到 AVX2 包，回退到基础版本"
-      asset_name="${PROGRAM}-linux-x86_64-musl.tar.gz"
+      asset_name="${PROGRAM}-linux-x86_64-musl.tar.xz"
     fi
   fi
 
@@ -288,11 +296,14 @@ main() {
 
   download_asset "${asset_name}" "${temp_dir}"
   install_binary_and_assets "${asset_name}" "${temp_dir}"
-  install_daemon_if_needed
+  install_daemon_if_needed "${temp_dir}"
 
   log "安装完成"
   log "配置文件: ${INSTALL_CONFIG_DIR}/config.toml"
   log "二进制路径: ${INSTALL_BIN_DIR}/${PROGRAM}"
 }
 
-main "$@"
+# 为什么用这个入口判断：允许测试脚本以 source 方式复用函数，避免执行真实安装流程。
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
