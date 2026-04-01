@@ -76,7 +76,7 @@ jobs:
             dist/${{ matrix.artifact_name }}.tar.gz
             dist/${{ matrix.artifact_name }}.tar.gz.sha256
 
-release:
+  release:
     runs-on: ubuntu-24.04
     needs: build
     steps:
