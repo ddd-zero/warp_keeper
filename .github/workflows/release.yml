@@ -76,10 +76,17 @@ jobs:
             dist/${{ matrix.artifact_name }}.tar.gz
             dist/${{ matrix.artifact_name }}.tar.gz.sha256
 
-  release:
+release:
     runs-on: ubuntu-24.04
     needs: build
     steps:
+      # --- 新增：必须把代码拉下来，gh release 才能读取 git 信息 ---
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      # -------------------------------------------------------------
+
       - name: 解析发布标签
         id: meta
         shell: bash
