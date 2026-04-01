@@ -144,8 +144,8 @@ pick_asset_name() {
 
   case "${arch}" in
     x86_64 | amd64)
-      local baseline_asset="${PROGRAM}-linux-x86_64-musl.tar.xz"
-      local avx2_asset="${PROGRAM}-linux-x86_64-musl-avx2.tar.xz"
+      local baseline_asset="${PROGRAM}-linux-x86_64-musl"
+      local avx2_asset="${PROGRAM}-linux-x86_64-musl-avx2"
 
       if [[ "${FORCE_AVX2}" -eq 1 && "${FORCE_BASELINE}" -eq 1 ]]; then
         die "--force-avx2 与 --force-baseline 不能同时使用"
@@ -186,6 +186,10 @@ download_asset() {
   local sha_url="${asset_url}.sha256"
 
   if ! asset_exists "${asset_url}"; then
+    local legacy_asset_url="${asset_url}.tar.xz"
+    if asset_exists "${legacy_asset_url}"; then
+      die "标签 ${TAG} 仍是旧的 tar.xz 发布格式，请发布新标签后重试，或手动安装 xz 再安装该旧标签"
+    fi
     die "未找到发布产物: ${asset_name}"
   fi
 
@@ -206,15 +210,10 @@ download_asset() {
 install_binary_and_assets() {
   local asset_name="$1"
   local temp_dir="$2"
-  local unpack_dir="${temp_dir}/unpack"
-
-  mkdir -p "${unpack_dir}"
-  tar -xJf "${temp_dir}/${asset_name}" -C "${unpack_dir}"
-
-  [[ -x "${unpack_dir}/${PROGRAM}" ]] || die "压缩包缺少可执行文件: ${PROGRAM}"
+  [[ -s "${temp_dir}/${asset_name}" ]] || die "下载文件为空: ${asset_name}"
 
   install -d "${INSTALL_BIN_DIR}" "${INSTALL_CONFIG_DIR}"
-  install -m 0755 "${unpack_dir}/${PROGRAM}" "${INSTALL_BIN_DIR}/${PROGRAM}"
+  install -m 0755 "${temp_dir}/${asset_name}" "${INSTALL_BIN_DIR}/${PROGRAM}"
 
   if [[ ! -f "${INSTALL_CONFIG_DIR}/config.toml" ]]; then
     log "首次安装，初始化配置: ${INSTALL_CONFIG_DIR}/config.toml"
@@ -279,7 +278,6 @@ main() {
 
   require_linux
   require_cmd curl
-  require_cmd tar
   require_cmd sha256sum
 
   resolve_repo_from_git
@@ -291,11 +289,11 @@ main() {
   asset_name="$(pick_asset_name)"
 
   # 自动策略下，若 AVX2 包不存在，回退到基础版本，避免安装被中断。
-  if [[ "${asset_name}" == "${PROGRAM}-linux-x86_64-musl-avx2.tar.xz" ]]; then
+  if [[ "${asset_name}" == "${PROGRAM}-linux-x86_64-musl-avx2" ]]; then
     local avx_url="https://github.com/${REPO}/releases/download/${TAG}/${asset_name}"
     if ! asset_exists "${avx_url}" && [[ "${FORCE_AVX2}" -eq 0 ]]; then
       warn "未找到 AVX2 包，回退到基础版本"
-      asset_name="${PROGRAM}-linux-x86_64-musl.tar.xz"
+      asset_name="${PROGRAM}-linux-x86_64-musl"
     fi
   fi
 

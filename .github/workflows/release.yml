@@ -42,7 +42,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
-      - name: 编译并打包产物
+      - name: 编译并准备发布二进制
         shell: bash
         run: |
           set -euo pipefail
@@ -51,20 +51,16 @@ jobs:
 
           # 普通版（不启用 AVX/AVX2）
           RUSTFLAGS="${RUSTFLAGS_BASELINE}" cargo build --release --target "${TARGET}"
-          baseline_name="${ARTIFACT_BASELINE}.tar.xz"
-          baseline_tarball="dist/${baseline_name}"
-          tar -C "target/${TARGET}/release" -cJf "${baseline_tarball}" "${BIN_NAME}"
+          install -m 0755 "target/${TARGET}/release/${BIN_NAME}" "dist/${ARTIFACT_BASELINE}"
 
           # AVX2 版
           RUSTFLAGS="${RUSTFLAGS_AVX2}" cargo build --release --target "${TARGET}"
-          avx2_name="${ARTIFACT_AVX2}.tar.xz"
-          avx2_tarball="dist/${avx2_name}"
-          tar -C "target/${TARGET}/release" -cJf "${avx2_tarball}" "${BIN_NAME}"
+          install -m 0755 "target/${TARGET}/release/${BIN_NAME}" "dist/${ARTIFACT_AVX2}"
 
           (
             cd dist
-            sha256sum "${baseline_name}" > "${baseline_name}.sha256"
-            sha256sum "${avx2_name}" > "${avx2_name}.sha256"
+            sha256sum "${ARTIFACT_BASELINE}" > "${ARTIFACT_BASELINE}.sha256"
+            sha256sum "${ARTIFACT_AVX2}" > "${ARTIFACT_AVX2}.sha256"
           )
 
       - name: 上传构建产物
@@ -72,10 +68,10 @@ jobs:
         with:
           name: release-archives
           path: |
-            dist/${{ env.ARTIFACT_BASELINE }}.tar.xz
-            dist/${{ env.ARTIFACT_BASELINE }}.tar.xz.sha256
-            dist/${{ env.ARTIFACT_AVX2 }}.tar.xz
-            dist/${{ env.ARTIFACT_AVX2 }}.tar.xz.sha256
+            dist/${{ env.ARTIFACT_BASELINE }}
+            dist/${{ env.ARTIFACT_BASELINE }}.sha256
+            dist/${{ env.ARTIFACT_AVX2 }}
+            dist/${{ env.ARTIFACT_AVX2 }}.sha256
 
   release:
     runs-on: ubuntu-24.04
@@ -110,7 +106,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p upload
-          find dist -type f \( -name "*.tar.xz" -o -name "*.sha256" \) -exec cp {} upload/ \;
+          find dist -type f \
+            \( -name "${ARTIFACT_BASELINE}" -o -name "${ARTIFACT_BASELINE}.sha256" -o -name "${ARTIFACT_AVX2}" -o -name "${ARTIFACT_AVX2}.sha256" \) \
+            -exec cp {} upload/ \;
           ls -lah upload
 
       - name: 创建或更新 Release

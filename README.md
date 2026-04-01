@@ -7,8 +7,8 @@
 - 仅提供 Linux/Unix 兼容环境支持
 - 发布产物为 `musl` 静态链接二进制
 - x86_64 提供两套优化包：
-  - 基础兼容版（不启用 AVX2）：`warp-keeper-linux-x86_64-musl.tar.xz`
-  - AVX2 优化版（`x86-64-v3`）：`warp-keeper-linux-x86_64-musl-avx2.tar.xz`
+  - 基础兼容版（不启用 AVX2）：`warp-keeper-linux-x86_64-musl`
+  - AVX2 优化版（`x86-64-v3`）：`warp-keeper-linux-x86_64-musl-avx2`
 
 ## 客户端识别规则
 
@@ -87,7 +87,7 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-## 进程守护（不同平台）
+## 进程守护
 
 发布包仅包含二进制文件，不再包含守护模板目录。安装脚本会按发布标签从仓库 `deploy/` 目录下载模板并注册守护：
 
@@ -97,8 +97,6 @@ cargo build --release --target x86_64-unknown-linux-musl
 安装脚本会自动识别并注册对应守护进程。
 
 ## 一键安装命令
-
-默认仓库已内置为 `ddd-zero/warp_keeper`，安装使用下面 3 条命令：
 
 ```bash
 # 1) 安装普通版本（baseline）
