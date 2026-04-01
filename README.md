@@ -98,26 +98,17 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ## 一键安装命令
 
-默认仓库已内置为 `ddd-zero/warp_keeper`，可直接执行：
+默认仓库已内置为 `ddd-zero/warp_keeper`，安装使用下面 3 条命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ddd-zero/warp_keeper/main/deploy/install.sh | sudo bash -s --
-```
-
-常用参数：
-
-```bash
-# 指定发布标签
-curl -fsSL https://raw.githubusercontent.com/ddd-zero/warp_keeper/main/deploy/install.sh | sudo bash -s -- --tag v1.0.0
-
-# 强制安装 AVX2 版本
-curl -fsSL https://raw.githubusercontent.com/ddd-zero/warp_keeper/main/deploy/install.sh | sudo bash -s -- --force-avx2
-
-# 强制安装基础兼容版本（不启用 AVX2）
+# 1) 安装普通版本（baseline）
 curl -fsSL https://raw.githubusercontent.com/ddd-zero/warp_keeper/main/deploy/install.sh | sudo bash -s -- --force-baseline
 
-# 覆盖默认仓库（可选）
-curl -fsSL https://raw.githubusercontent.com/ddd-zero/warp_keeper/main/deploy/install.sh | sudo bash -s -- --repo <owner>/<repo>
+# 2) 安装 AVX2 最新版本
+curl -fsSL https://raw.githubusercontent.com/ddd-zero/warp_keeper/main/deploy/install.sh | sudo bash -s -- --force-avx2
+
+# 3) 安装 AVX2 指定版本
+curl -fsSL https://raw.githubusercontent.com/ddd-zero/warp_keeper/main/deploy/install.sh | sudo bash -s -- --force-avx2 --tag v1.0.0
 ```
 
 ## 日志

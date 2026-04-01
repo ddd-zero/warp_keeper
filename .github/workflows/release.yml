@@ -51,15 +51,21 @@ jobs:
 
           # 普通版（不启用 AVX/AVX2）
           RUSTFLAGS="${RUSTFLAGS_BASELINE}" cargo build --release --target "${TARGET}"
-          baseline_tarball="dist/${ARTIFACT_BASELINE}.tar.xz"
+          baseline_name="${ARTIFACT_BASELINE}.tar.xz"
+          baseline_tarball="dist/${baseline_name}"
           tar -C "target/${TARGET}/release" -cJf "${baseline_tarball}" "${BIN_NAME}"
-          sha256sum "${baseline_tarball}" > "${baseline_tarball}.sha256"
 
           # AVX2 版
           RUSTFLAGS="${RUSTFLAGS_AVX2}" cargo build --release --target "${TARGET}"
-          avx2_tarball="dist/${ARTIFACT_AVX2}.tar.xz"
+          avx2_name="${ARTIFACT_AVX2}.tar.xz"
+          avx2_tarball="dist/${avx2_name}"
           tar -C "target/${TARGET}/release" -cJf "${avx2_tarball}" "${BIN_NAME}"
-          sha256sum "${avx2_tarball}" > "${avx2_tarball}.sha256"
+
+          (
+            cd dist
+            sha256sum "${baseline_name}" > "${baseline_name}.sha256"
+            sha256sum "${avx2_name}" > "${avx2_name}.sha256"
+          )
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4

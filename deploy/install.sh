@@ -193,6 +193,10 @@ download_asset() {
   curl -fL "${asset_url}" -o "${temp_dir}/${asset_name}"
   curl -fL "${sha_url}" -o "${temp_dir}/${asset_name}.sha256"
 
+  # 为什么额外放一份到 dist/：兼容历史发布中的 sha256 文件写法（可能记录为 dist/<文件名>）。
+  mkdir -p "${temp_dir}/dist"
+  cp -f "${temp_dir}/${asset_name}" "${temp_dir}/dist/${asset_name}"
+
   (
     cd "${temp_dir}"
     sha256sum -c "${asset_name}.sha256"
@@ -297,7 +301,8 @@ main() {
 
   local temp_dir
   temp_dir="$(mktemp -d)"
-  trap 'rm -rf "${temp_dir}"' EXIT
+  # 为什么使用默认值展开：避免 set -u 下脚本异常退出时 temp_dir 未绑定导致二次报错。
+  trap 'rm -rf "${temp_dir:-}"' EXIT
 
   download_asset "${asset_name}" "${temp_dir}"
   install_binary_and_assets "${asset_name}" "${temp_dir}"
