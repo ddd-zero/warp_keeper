@@ -6,6 +6,7 @@ INSTALL_BIN_DIR="/usr/local/bin"
 INSTALL_CONFIG_DIR="/etc/warp-keeper"
 SYSTEMD_UNIT_PATH="/etc/systemd/system/warp-keeper.service"
 OPENRC_UNIT_PATH="/etc/init.d/warp-keeper"
+DEFAULT_REPO="ddd-zero/warp_keeper"
 
 REPO="${KEEP_WARP_REPO:-}"
 TAG="${KEEP_WARP_TAG:-}"
@@ -16,10 +17,10 @@ FORCE_BASELINE=0
 usage() {
   cat <<'EOF'
 用法:
-  install.sh --repo <owner/repo> [--tag <tag>] [--force-avx2 | --force-baseline] [--no-daemon]
+  install.sh [--repo <owner/repo>] [--tag <tag>] [--force-avx2 | --force-baseline] [--no-daemon]
 
 参数:
-  --repo <owner/repo>  GitHub 仓库名，示例: alice/keep_warp
+  --repo <owner/repo>  GitHub 仓库名（可选，默认 ddd-zero/warp_keeper）
   --tag <tag>          指定发布标签，不传则自动安装最新 release
   --no-daemon          只安装二进制，不自动注册守护进程
   --force-avx2         强制安装 AVX2 版本
@@ -105,6 +106,11 @@ resolve_repo_from_git() {
       REPO="${BASH_REMATCH[1]}"
       log "未显式传入 --repo，已从 git remote 解析为: ${REPO}"
     fi
+  fi
+
+  if [[ -z "${REPO}" ]]; then
+    REPO="${DEFAULT_REPO}"
+    log "未显式传入 --repo，且未从 git remote 解析到仓库，使用默认仓库: ${REPO}"
   fi
 }
 
@@ -273,7 +279,6 @@ main() {
   require_cmd sha256sum
 
   resolve_repo_from_git
-  [[ -n "${REPO}" ]] || die "请通过 --repo 传入仓库名，例如 --repo alice/keep_warp"
   validate_repo "${REPO}"
 
   resolve_tag
@@ -303,7 +308,7 @@ main() {
   log "二进制路径: ${INSTALL_BIN_DIR}/${PROGRAM}"
 }
 
-# 为什么用这个入口判断：允许测试脚本以 source 方式复用函数，避免执行真实安装流程。
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# 为什么使用这个写法：兼容 `bash -s`（stdin 执行）+ `set -u`，避免 BASH_SOURCE 未绑定报错。
+if [[ "${BASH_SOURCE[0]-$0}" == "$0" ]]; then
   main "$@"
 fi
