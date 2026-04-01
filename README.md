@@ -12,6 +12,8 @@
 
 ## 客户端识别规则
 
+
+
 - 识别命令为内置逻辑，不开放配置
 - `detect` 只做一次性识别：
   - 识别成功：把客户端写入 `reconnect.warp_client`，并写入对应 `reconnect.commands`
