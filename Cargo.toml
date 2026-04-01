@@ -1,0 +1,21 @@
+[package]
+name = "warp-keeper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.50", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+socket2 = "0.5.10"
+toml = "0.8.23"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+incremental = false

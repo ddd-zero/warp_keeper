@@ -1,0 +1,119 @@
+name: release-linux-unix
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的标签（例如 v1.0.0）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  BIN_NAME: warp-keeper
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: baseline
+            artifact_name: warp-keeper-linux-x86_64-musl
+            rustflags: -C target-cpu=x86-64 -C target-feature=-avx,-avx2
+          - variant: avx2
+            artifact_name: warp-keeper-linux-x86_64-musl-avx2
+            rustflags: -C target-cpu=x86-64-v3 -C target-feature=+avx,+avx2,+fma
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+
+      - name: 安装 musl 工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: 编译 Release
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build --release --target "${TARGET}"
+
+      - name: 打包产物
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pkg_dir="dist/${{ matrix.artifact_name }}"
+          mkdir -p "${pkg_dir}"
+          install -m 0755 "target/${TARGET}/release/${BIN_NAME}" "${pkg_dir}/${BIN_NAME}"
+          cp README.md "${pkg_dir}/README.md"
+          cp -r deploy "${pkg_dir}/deploy"
+
+          tarball="dist/${{ matrix.artifact_name }}.tar.gz"
+          tar -C dist -czf "${tarball}" "${{ matrix.artifact_name }}"
+          sha256sum "${tarball}" > "${tarball}.sha256"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            dist/${{ matrix.artifact_name }}.tar.gz
+            dist/${{ matrix.artifact_name }}.tar.gz.sha256
+
+  release:
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - name: 解析发布标签
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: 汇总待发布文件
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          find dist -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec cp {} upload/ \;
+          ls -lah upload
+
+      - name: 创建或更新 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" upload/* --clobber
+          else
+            gh release create "${RELEASE_TAG}" upload/* --title "${RELEASE_TAG}" --generate-notes --target "${GITHUB_SHA}"
+          fi

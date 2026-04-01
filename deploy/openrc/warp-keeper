@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+
+name="warp-keeper"
+description="warp-keeper WARP 保活服务"
+
+command="/usr/local/bin/warp-keeper"
+command_args="run --config /etc/warp-keeper/config.toml"
+command_user="root:root"
+supervisor=supervise-daemon
+supervise_daemon_args="--respawn-delay 3 --respawn-max 0"
+
+depend() {
+    need net
+    after firewall
+}

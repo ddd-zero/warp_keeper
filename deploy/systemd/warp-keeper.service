@@ -1,0 +1,17 @@
+[Unit]
+Description=warp-keeper WARP 保活服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/warp-keeper run --config /etc/warp-keeper/config.toml
+Restart=always
+RestartSec=3
+User=root
+Group=root
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
