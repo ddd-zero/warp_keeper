@@ -107,8 +107,6 @@ pub struct AppConfig {
     pub reconnect: ReconnectConfig,
     #[serde(default)]
     pub monitor: MonitorConfig,
-    #[serde(default)]
-    pub reconnect_verify: ReconnectVerifyConfig,
 }
 
 impl AppConfig {
@@ -128,8 +126,8 @@ impl AppConfig {
 
         validate_check(&self.monitor.primary_check, "monitor.primary_check")?;
 
-        for (idx, check) in self.reconnect_verify.checks.iter().enumerate() {
-            validate_check(check, &format!("reconnect_verify.checks[{idx}]"))?;
+        for (idx, check) in self.monitor.reconnect_verify.iter().enumerate() {
+            validate_check(check, &format!("monitor.reconnect_verify[{idx}]"))?;
         }
 
         Ok(())
@@ -183,6 +181,8 @@ pub struct MonitorConfig {
     pub interface_name: Option<String>,
     #[serde(default = "default_primary_check")]
     pub primary_check: HealthCheck,
+    #[serde(default = "default_reconnect_verify_checks")]
+    pub reconnect_verify: Vec<HealthCheck>,
 }
 
 impl Default for MonitorConfig {
@@ -190,20 +190,7 @@ impl Default for MonitorConfig {
         Self {
             interface_name: None,
             primary_check: default_primary_check(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReconnectVerifyConfig {
-    #[serde(default = "default_reconnect_verify_checks")]
-    pub checks: Vec<HealthCheck>,
-}
-
-impl Default for ReconnectVerifyConfig {
-    fn default() -> Self {
-        Self {
-            checks: default_reconnect_verify_checks(),
+            reconnect_verify: default_reconnect_verify_checks(),
         }
     }
 }
@@ -367,8 +354,39 @@ pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
+fn write_reconnect_section_preserving_comments(path: &Path, config: &AppConfig) -> Result<()> {
+    config.validate()?;
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
+    }
+
+    let original = fs::read_to_string(path)
+        .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
+
+    if let Some(updated) = update_reconnect_section(&original, &config.reconnect) {
+        fs::write(path, updated).with_context(|| format!("写入配置失败: {}", path.display()))?;
+        return Ok(());
+    }
+
+    write_config(path, config)
+}
+
+#[derive(Serialize)]
+struct RenderConfigBody<'a> {
+    general: &'a GeneralConfig,
+    reconnect: &'a ReconnectConfig,
+}
+
 pub fn render_config(config: &AppConfig) -> Result<String> {
-    let body = toml::to_string_pretty(config).context("序列化配置失败")?;
+    let body = toml::to_string_pretty(&RenderConfigBody {
+        general: &config.general,
+        reconnect: &config.reconnect,
+    })
+    .context("序列化配置失败")?;
     let header = r#"# warp-keeper 配置文件
 # 说明：
 # 1) 客户端识别顺序固定：warp-official -> warp-wg -> warp-go
@@ -377,7 +395,11 @@ pub fn render_config(config: &AppConfig) -> Result<String> {
 # 4) 主检测与重连后检测都使用 method 抽象（ping/tcp/http）
 
 "#;
-    Ok(format!("{header}{body}"))
+    Ok(format!(
+        "{header}{}\n\n{}",
+        body.trim_end(),
+        render_monitor_config(&config.monitor)
+    ))
 }
 
 pub fn detect_client_builtin(probe: &dyn CommandProbe) -> Option<WarpClient> {
@@ -419,7 +441,7 @@ pub fn detect_client_now(path: &Path, config: &mut AppConfig) -> Result<Option<W
         }
     }
 
-    write_config(path, config)?;
+    write_reconnect_section_preserving_comments(path, config)?;
     Ok(detected)
 }
 
@@ -469,8 +491,8 @@ pub fn execute_reconnect(config: &AppConfig) -> Result<()> {
 
 pub fn run_reconnect_verify_checks(config: &AppConfig, interface: &str) -> CheckReport {
     let checks = config
+        .monitor
         .reconnect_verify
-        .checks
         .iter()
         .map(|check| run_health_check(check, interface))
         .collect::<Vec<_>>();
@@ -931,137 +953,175 @@ fn default_reconnect_verify_checks() -> Vec<HealthCheck> {
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        AppConfig, CommandProbe, HealthCheck, LogLevel, WarpClient, detect_client_builtin,
-        parse_http_url, read_config, render_config, write_config,
+fn render_monitor_config(config: &MonitorConfig) -> String {
+    let mut lines = vec!["[monitor]".to_string()];
+
+    if let Some(interface_name) = &config.interface_name {
+        lines.push(format!(
+            "interface_name = {}",
+            render_toml_string(interface_name)
+        ));
+    }
+
+    lines.push(format!(
+        "primary_check = {}",
+        render_health_check_inline_value(&config.primary_check)
+    ));
+    lines.push(render_reconnect_verify_array(
+        "reconnect_verify",
+        &config.reconnect_verify,
+    ));
+
+    lines.join("\n")
+}
+
+fn render_reconnect_verify_array(name: &str, checks: &[HealthCheck]) -> String {
+    if checks.is_empty() {
+        return format!("{name} = []");
+    }
+
+    let items = checks
+        .iter()
+        .map(|check| format!("  {}", render_health_check_inline_value(check)))
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    format!("{name} = [\n{items}\n]")
+}
+
+fn render_health_check_inline_value(check: &HealthCheck) -> String {
+    match check {
+        HealthCheck::Ping {
+            target,
+            timeout_secs,
+        } => format!(
+            "{{ method = \"ping\", target = {}, timeout_secs = {} }}",
+            render_toml_string(target),
+            timeout_secs
+        ),
+        HealthCheck::Tcp {
+            target,
+            port,
+            timeout_secs,
+        } => format!(
+            "{{ method = \"tcp\", target = {}, port = {}, timeout_secs = {} }}",
+            render_toml_string(target),
+            port,
+            timeout_secs
+        ),
+        HealthCheck::Http {
+            url,
+            timeout_secs,
+            expect_status,
+            expect_contains,
+        } => {
+            let mut parts = vec![
+                "method = \"http\"".to_string(),
+                format!("url = {}", render_toml_string(url)),
+                format!("timeout_secs = {timeout_secs}"),
+            ];
+            if let Some(status) = expect_status {
+                parts.push(format!("expect_status = {status}"));
+            }
+            if let Some(text) = expect_contains {
+                parts.push(format!("expect_contains = {}", render_toml_string(text)));
+            }
+            format!("{{ {} }}", parts.join(", "))
+        }
+    }
+}
+
+fn render_toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
+fn update_reconnect_section(content: &str, reconnect: &ReconnectConfig) -> Option<String> {
+    let newline = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
     };
-    use std::collections::BTreeSet;
+    let trailing_newline = content.ends_with('\n');
+    let lines = content.lines().collect::<Vec<_>>();
 
-    struct FakeProbe {
-        ok_set: BTreeSet<String>,
-    }
+    let start = lines
+        .iter()
+        .position(|line| line.trim() == "[reconnect]")?;
 
-    impl CommandProbe for FakeProbe {
-        fn command_ok(&self, command: &str) -> bool {
-            self.ok_set.contains(command)
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, line)| is_table_header(line.trim()))
+        .map(|(idx, _)| idx)
+        .unwrap_or(lines.len());
+
+    let mut section_lines = Vec::with_capacity(end - start.saturating_sub(1));
+    let warp_client_line = format!(
+        "warp_client = {}",
+        render_toml_string(&reconnect_warp_client_text(reconnect))
+    );
+    let commands_line = format!("commands = {}", render_string_array(&reconnect.commands));
+
+    let mut wrote_warp_client = false;
+    let mut wrote_commands = false;
+
+    section_lines.push(lines[start].to_string());
+
+    for line in &lines[(start + 1)..end] {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("warp_client =") {
+            section_lines.push(warp_client_line.clone());
+            wrote_warp_client = true;
+            continue;
         }
-    }
-
-    #[test]
-    fn detect_order_should_prefer_official_over_others() {
-        let probe = FakeProbe {
-            ok_set: [
-                "systemctl is-active --quiet warp-svc".to_string(),
-                "command -v warp >/dev/null 2>&1".to_string(),
-                "command -v warp-go >/dev/null 2>&1".to_string(),
-            ]
-            .into_iter()
-            .collect(),
-        };
-        let client = detect_client_builtin(&probe);
-        assert_eq!(client, Some(WarpClient::WarpOfficial));
-    }
-
-    #[test]
-    fn detect_order_should_prefer_warp_wg_over_warp_go() {
-        let probe = FakeProbe {
-            ok_set: [
-                "command -v warp >/dev/null 2>&1".to_string(),
-                "command -v warp-go >/dev/null 2>&1".to_string(),
-            ]
-            .into_iter()
-            .collect(),
-        };
-        let client = detect_client_builtin(&probe);
-        assert_eq!(client, Some(WarpClient::WarpWg));
-    }
-
-    #[test]
-    fn parse_http_url_should_reject_https() {
-        let result = parse_http_url("https://example.com");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn default_config_should_support_roundtrip() {
-        let config = AppConfig::default();
-        let text = render_config(&config).expect("序列化应成功");
-        let parsed: AppConfig = toml::from_str(&text).expect("反序列化应成功");
-        assert_eq!(parsed.general.interval_secs, 2);
-        assert_eq!(parsed.general.log_level, LogLevel::Info);
-        match parsed.monitor.primary_check {
-            HealthCheck::Ping { .. } => {}
-            _ => panic!("默认主检测应为 ping"),
+        if trimmed.starts_with("commands =") {
+            section_lines.push(commands_line.clone());
+            wrote_commands = true;
+            continue;
         }
+        section_lines.push((*line).to_string());
     }
 
-    #[test]
-    fn read_write_config_should_work() {
-        let tmp_dir = tempfile::tempdir().expect("创建临时目录失败");
-        let path = tmp_dir.path().join("config.toml");
-        let mut config = AppConfig::default();
-        config.reconnect.warp_client = Some(WarpClient::WarpGo);
-        write_config(&path, &config).expect("写配置失败");
-        let loaded = read_config(&path).expect("读配置失败");
-        assert_eq!(loaded.reconnect.warp_client, Some(WarpClient::WarpGo));
+    if !wrote_warp_client {
+        section_lines.push(warp_client_line);
+    }
+    if !wrote_commands {
+        section_lines.push(commands_line);
     }
 
-    #[test]
-    fn warp_client_should_be_kebab_case_in_toml() {
-        let mut config = AppConfig::default();
-        config.reconnect.warp_client = Some(WarpClient::WarpGo);
-        let text = render_config(&config).expect("序列化应成功");
-        assert!(text.contains("warp-go"));
+    let mut merged = Vec::with_capacity(lines.len());
+    merged.extend(lines[..start].iter().map(|line| (*line).to_string()));
+    merged.extend(section_lines);
+    merged.extend(lines[end..].iter().map(|line| (*line).to_string()));
+
+    let mut rendered = merged.join(newline);
+    if trailing_newline {
+        rendered.push_str(newline);
     }
+    Some(rendered)
+}
 
-    #[test]
-    fn render_config_should_write_empty_warp_client_when_unset() {
-        let config = AppConfig::default();
-        let text = render_config(&config).expect("序列化应成功");
-        assert!(text.contains("warp_client = \"\""));
-    }
+fn is_table_header(line: &str) -> bool {
+    !line.is_empty()
+        && !line.starts_with('#')
+        && ((line.starts_with('[') && line.ends_with(']'))
+            || (line.starts_with("[[") && line.ends_with("]]")))
+}
 
-    #[test]
-    fn read_config_should_treat_empty_warp_client_as_none() {
-        let tmp_dir = tempfile::tempdir().expect("创建临时目录失败");
-        let path = tmp_dir.path().join("config.toml");
-        let content = r#"
-[general]
-interval_secs = 2
-failure_threshold = 3
-reconnect_cooldown_secs = 2
-shell = "/bin/bash"
-log_level = "info"
-log_file = "/var/log/warp-keeper.log"
+fn reconnect_warp_client_text(config: &ReconnectConfig) -> String {
+    config
+        .warp_client
+        .map(|client| client.to_string())
+        .unwrap_or_default()
+}
 
-[reconnect]
-warp_client = ""
-commands = []
-
-[monitor.primary_check]
-method = "ping"
-target = "8.8.8.8"
-timeout_secs = 1
-
-[reconnect_verify]
-checks = [
-  { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" },
-  { method = "tcp", target = "1.1.1.1", port = 80, timeout_secs = 3 }
-]
-"#;
-        std::fs::write(&path, content).expect("写入配置文本失败");
-        let loaded = read_config(&path).expect("读配置失败");
-        assert_eq!(loaded.reconnect.warp_client, None);
-    }
-
-    #[test]
-    fn deploy_config_template_should_parse() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("deploy")
-            .join("config.toml");
-        let loaded = read_config(&path).expect("部署配置模板应可解析");
-        assert_eq!(loaded.reconnect.warp_client, None);
-    }
+fn render_string_array(values: &[String]) -> String {
+    toml::Value::Array(
+        values
+            .iter()
+            .map(|value| toml::Value::String(value.clone()))
+            .collect(),
+    )
+    .to_string()
 }

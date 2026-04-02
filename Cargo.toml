@@ -10,9 +10,6 @@ serde = { version = "1.0.228", features = ["derive"] }
 socket2 = "0.5.10"
 toml = "0.8.23"
 
-[dev-dependencies]
-tempfile = "3.23.0"
-
 [profile.release]
 opt-level = 3
 lto = "fat"

@@ -32,7 +32,7 @@ warp-keeper run --config ./config.toml
 - `general`：间隔、失败阈值、重连冷却、shell、日志等级、日志文件
 - `reconnect`：当前识别到的客户端、重连命令列表
 - `monitor.primary_check`：主检测方法（`ping` / `tcp` / `http` 三选一）
-- `reconnect_verify.checks`：重连后检测方法列表（可配置多个，必须全部成功）
+- `monitor.reconnect_verify`：重连后检测方法列表（可配置多个，必须全部成功）
 
 ## `config.toml` 示例（带注释）
 
@@ -60,19 +60,11 @@ commands = ["warp-go o", "warp-go o"]
 [monitor]
 # 可选：手动指定网卡名；不填则自动匹配包含 warp 的网卡
 # interface_name = "warp"
-
-[monitor.primary_check]
 # 主检测方法: ping / tcp / http
-method = "ping"
-# ping 目标
-target = "8.8.8.8"
-# 单次 ping 超时（秒）
-timeout_secs = 1
-
-[reconnect_verify]
+primary_check = { method = "ping", target = "8.8.8.8", timeout_secs = 1 }
 # 重连后检测列表：可配多个，必须全部成功
-checks = [
-  # HTTP 检测仅支持 http://（不支持 https://，expect_contains 大小写敏感，可不填）
+reconnect_verify = [
+  # HTTP 检测仅支持 http://（不支持 https://，expect_contains关键字检测，大小写敏感，可不填）
   { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" },
   # TCP 检测（等价 tcping）
   { method = "tcp", target = "1.1.1.1", port = 80, timeout_secs = 3 }

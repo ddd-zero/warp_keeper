@@ -6,9 +6,7 @@ INSTALL_BIN_DIR="/usr/local/bin"
 INSTALL_CONFIG_DIR="/etc/warp-keeper"
 SYSTEMD_UNIT_PATH="/etc/systemd/system/warp-keeper.service"
 OPENRC_UNIT_PATH="/etc/init.d/warp-keeper"
-DEFAULT_REPO="ddd-zero/warp_keeper"
-
-REPO="${KEEP_WARP_REPO:-}"
+REPO="ddd-zero/warp_keeper"
 TAG="${KEEP_WARP_TAG:-}"
 INSTALL_DAEMON=1
 FORCE_AVX2=0
@@ -17,10 +15,9 @@ FORCE_BASELINE=0
 usage() {
   cat <<'EOF'
 用法:
-  install.sh [--repo <owner/repo>] [--tag <tag>] [--force-avx2 | --force-baseline] [--no-daemon]
+  install.sh [--tag <tag>] [--force-avx2 | --force-baseline] [--no-daemon]
 
 参数:
-  --repo <owner/repo>  GitHub 仓库名（可选，默认 ddd-zero/warp_keeper）
   --tag <tag>          指定发布标签，不传则自动安装最新 release
   --no-daemon          只安装二进制，不自动注册守护进程
   --force-avx2         强制安装 AVX2 版本
@@ -46,10 +43,6 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"
 }
 
-validate_repo() {
-  [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || die "仓库格式非法: $1"
-}
-
 validate_tag() {
   [[ "$1" =~ ^[A-Za-z0-9._/-]+$ ]] || die "标签格式非法: $1"
 }
@@ -57,11 +50,6 @@ validate_tag() {
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --repo)
-        [[ $# -ge 2 ]] || die "--repo 缺少参数"
-        REPO="$2"
-        shift 2
-        ;;
       --tag)
         [[ $# -ge 2 ]] || die "--tag 缺少参数"
         TAG="$2"
@@ -92,26 +80,6 @@ parse_args() {
 
 ensure_root() {
   [[ "$(id -u)" -eq 0 ]] || die "请使用 root 运行，例如: curl ... | sudo bash"
-}
-
-resolve_repo_from_git() {
-  if [[ -n "${REPO}" ]]; then
-    return
-  fi
-
-  if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    local remote_url
-    remote_url="$(git remote get-url origin 2>/dev/null || true)"
-    if [[ "$remote_url" =~ github.com[:/]([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)(\.git)?$ ]]; then
-      REPO="${BASH_REMATCH[1]}"
-      log "未显式传入 --repo，已从 git remote 解析为: ${REPO}"
-    fi
-  fi
-
-  if [[ -z "${REPO}" ]]; then
-    REPO="${DEFAULT_REPO}"
-    log "未显式传入 --repo，且未从 git remote 解析到仓库，使用默认仓库: ${REPO}"
-  fi
 }
 
 require_linux() {
@@ -286,9 +254,6 @@ main() {
   require_linux
   require_cmd curl
   require_cmd sha256sum
-
-  resolve_repo_from_git
-  validate_repo "${REPO}"
 
   resolve_tag
 
