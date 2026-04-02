@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -583,11 +583,12 @@ fn run_ping_check(target: &str, timeout_secs: u64, interface: &str) -> SingleChe
 fn run_tcp_check(target: &str, port: u16, timeout_secs: u64, interface: &str) -> SingleCheckResult {
     let name = format!("tcp({target}:{port}@{interface})");
     let timeout = Duration::from_secs(timeout_secs);
+    let started = Instant::now();
     match connect_tcp_via_interface(target, port, timeout, interface) {
         Ok(_) => SingleCheckResult {
             name,
             success: true,
-            detail: "连通".to_string(),
+            detail: format!("连通，连接耗时 {} ms", format_elapsed_ms(started.elapsed())),
         },
         Err(err) => SingleCheckResult {
             name,
@@ -618,6 +619,7 @@ fn run_http_check(
     };
 
     let timeout = Duration::from_secs(timeout_secs);
+    let started = Instant::now();
     let mut stream = match connect_tcp_via_interface(&parsed.host, parsed.port, timeout, interface)
     {
         Ok(v) => v,
@@ -695,7 +697,10 @@ fn run_http_check(
     SingleCheckResult {
         name,
         success: true,
-        detail: format!("状态码 {status}"),
+        detail: format!(
+            "状态码 {status}，请求耗时 {} ms",
+            format_elapsed_ms(started.elapsed())
+        ),
     }
 }
 
@@ -971,6 +976,10 @@ fn format_exit_code_suffix(code: Option<i32>) -> String {
         Some(code) => format!("，退出码 {code}"),
         None => String::new(),
     }
+}
+
+fn format_elapsed_ms(duration: Duration) -> String {
+    format!("{:.2}", duration.as_secs_f64() * 1000.0)
 }
 
 fn default_interval_secs() -> u64 {
