@@ -202,11 +202,19 @@ install_systemd_daemon() {
   local temp_dir="$1"
   local unit_src="${temp_dir}/warp-keeper.service"
   local unit_url="https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/systemd/warp-keeper.service"
+  local service_name="warp-keeper.service"
   curl -fL "${unit_url}" -o "${unit_src}" || return 1
   install -m 0644 "${unit_src}" "${SYSTEMD_UNIT_PATH}"
   systemctl daemon-reload
-  systemctl enable --now warp-keeper.service
-  log "已启用 systemd 守护: warp-keeper.service"
+  systemctl enable "${service_name}" >/dev/null 2>&1
+
+  if systemctl is-active --quiet "${service_name}"; then
+    systemctl restart "${service_name}"
+    log "已覆盖 systemd 守护并重启进程: ${service_name}"
+  else
+    systemctl start "${service_name}"
+    log "已覆盖 systemd 守护并启动进程: ${service_name}"
+  fi
 }
 
 install_openrc_daemon() {
