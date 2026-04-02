@@ -99,7 +99,7 @@ fn run_loop(config_path: &Path) -> anyhow::Result<u8> {
     }
 
     let mut consecutive_failures: u32 = 0;
-    logger.info("开始监控循环");
+    logger.info("开始监控");
     let mut pending_primary = Some(initial_primary);
 
     loop {

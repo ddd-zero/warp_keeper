@@ -1,6 +1,7 @@
 # warp-keeper
 
-`warp-keeper` 是 Linux/Unix 下的 WARP 保活工具：通过 WARP 网卡执行可配置主检测（`ping`/`tcp`/`http`），断线后执行重连命令，再执行重连校验。
+`warp-keeper` 是 Linux/Unix 下的 WARP 保活工具：通过 WARP 网卡执行可配置主检测（`ping`/`tcp`/`http`），断线后执行重连命令，再执行重连校验。  
+tcp/http未实现链接复用。
 
 ## 支持范围
 
@@ -60,14 +61,14 @@ commands = ["warp-go o", "warp-go o"]
 [monitor]
 # 可选：手动指定网卡名；不填则自动匹配包含 warp 的网卡
 # interface_name = "warp"
-# 主检测方法: ping / tcp / http
+# 主检测方法: ping / tcp / http，格式参考主/副检测
 primary_check = { method = "ping", target = "8.8.8.8", timeout_secs = 1 }
 # 重连后检测列表：可配多个，必须全部成功
 reconnect_verify = [
-  # HTTP 检测仅支持 http://（不支持 https://，expect_contains关键字检测，大小写敏感，可不填）
-  { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" },
   # TCP 检测（等价 tcping）
   { method = "tcp", target = "1.1.1.1", port = 80, timeout_secs = 3 }
+  # HTTP 检测仅支持 http://（不支持 https://，expect_contains关键字检测，大小写敏感，可不填）
+  { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" },
 ]
 ```
 
