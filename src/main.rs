@@ -5,8 +5,9 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 use warp_keeper::{
-    AppConfig, CheckReport, Logger, detect_client_now, execute_reconnect, find_warp_interface,
-    read_config, run_primary_check, run_reconnect_verify_checks,
+    AppConfig, CheckReport, HealthCheck, LogLevel, Logger, SingleCheckResult, app_version,
+    detect_client_now, execute_reconnect, find_warp_interface, format_log_line, read_config,
+    run_primary_check, run_reconnect_verify_checks,
 };
 
 #[derive(Debug, Parser)]
@@ -22,7 +23,7 @@ struct Cli {
 enum Commands {
     /// 持续检测并在断线时重连
     Run,
-    /// 仅执行一次 ICMP 检测
+    /// 仅执行一次主检测
     Check,
     /// 手动执行一次客户端识别并写入重连命令
     Detect,
@@ -33,7 +34,7 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => ExitCode::from(code),
         Err(err) => {
-            eprintln!("[ERROR] {err:#}");
+            eprintln!("{}", format_log_line(LogLevel::Error, &format!("{err:#}")));
             ExitCode::from(1)
         }
     }
@@ -45,6 +46,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
         Commands::Detect => {
             let mut config = read_config(&cli.config)?;
             let logger = make_logger(&config);
+            log_runtime_banner(&logger, "detect");
             let detected = detect_client_now(&cli.config, &mut config)?;
             match detected {
                 Some(client) => logger.info(&format!(
@@ -65,10 +67,11 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
 fn run_check(config_path: &Path) -> anyhow::Result<u8> {
     let config = read_config(config_path)?;
     let logger = make_logger(&config);
+    log_runtime_banner(&logger, "check");
 
     let interface = resolve_interface_or_fail(&config, &logger)?;
     let result = run_primary_check(&config, &interface);
-    log_single_check(&logger, &result);
+    log_check_result(&logger, &result, LogLevel::Info);
 
     if result.success { Ok(0) } else { Ok(1) }
 }
@@ -76,16 +79,37 @@ fn run_check(config_path: &Path) -> anyhow::Result<u8> {
 fn run_loop(config_path: &Path) -> anyhow::Result<u8> {
     let config = read_config(config_path)?;
     let logger = make_logger(&config);
+    log_runtime_banner(&logger, "run");
 
     let mut interface = resolve_interface_or_fail(&config, &logger)?;
     logger.info(&format!("使用 WARP 网卡: {interface}"));
+    logger.info(&format!(
+        "主检测: {}",
+        describe_health_check(&config.monitor.primary_check, &interface)
+    ));
+
+    let initial_primary = run_primary_check(&config, &interface);
+    log_check_result(&logger, &initial_primary, LogLevel::Info);
+    if !initial_primary.success {
+        return Err(anyhow::anyhow!(
+            "首次主检测失败，WARP 可能未正常运行，请先确认连接状态。检测结果: {} -> {}",
+            initial_primary.name,
+            initial_primary.detail
+        ));
+    }
 
     let mut consecutive_failures: u32 = 0;
     logger.info("开始监控循环");
+    let mut pending_primary = Some(initial_primary);
 
     loop {
-        let primary = run_primary_check(&config, &interface);
-        log_single_check(&logger, &primary);
+        let primary = if let Some(result) = pending_primary.take() {
+            result
+        } else {
+            let result = run_primary_check(&config, &interface);
+            log_primary_check(&logger, &result);
+            result
+        };
 
         if primary.success {
             consecutive_failures = 0;
@@ -154,17 +178,43 @@ fn resolve_interface_or_fail(config: &AppConfig, logger: &Logger) -> anyhow::Res
     }
 }
 
-fn log_single_check(logger: &Logger, result: &warp_keeper::SingleCheckResult) {
-    if result.success {
-        logger.info(&format!("[OK] {} -> {}", result.name, result.detail));
-    } else {
-        logger.warn(&format!("[FAIL] {} -> {}", result.name, result.detail));
+fn log_check_result(logger: &Logger, result: &SingleCheckResult, success_level: LogLevel) {
+    let line = format!(
+        "[{}] {} -> {}",
+        if result.success { "OK" } else { "FAIL" },
+        result.name,
+        result.detail
+    );
+
+    match (result.success, success_level) {
+        (true, LogLevel::Debug) => logger.debug(&line),
+        (true, _) => logger.info(&line),
+        (false, _) => logger.warn(&line),
     }
+}
+
+fn log_primary_check(logger: &Logger, result: &SingleCheckResult) {
+    log_check_result(logger, result, LogLevel::Debug);
 }
 
 fn log_report(logger: &Logger, report: &CheckReport) {
     for item in &report.checks {
-        log_single_check(logger, item);
+        log_check_result(logger, item, LogLevel::Info);
+    }
+}
+
+fn log_runtime_banner(logger: &Logger, mode: &str) {
+    logger.info(&format!(
+        "启动 warp-keeper v{}，模式: {mode}",
+        app_version()
+    ));
+}
+
+fn describe_health_check(check: &HealthCheck, interface: &str) -> String {
+    match check {
+        HealthCheck::Ping { target, .. } => format!("ping({target}@{interface})"),
+        HealthCheck::Tcp { target, port, .. } => format!("tcp({target}:{port}@{interface})"),
+        HealthCheck::Http { url, .. } => format!("http({url}@{interface})"),
     }
 }
 
@@ -173,8 +223,14 @@ fn make_logger(config: &AppConfig) -> Logger {
         Ok(logger) => logger,
         Err(err) => {
             eprintln!(
-                "[WARN] 初始化日志文件 `{}` 失败，后续仅输出到终端，不写入磁盘: {err:#}",
-                config.general.log_file
+                "{}",
+                format_log_line(
+                    LogLevel::Warn,
+                    &format!(
+                        "初始化日志文件 `{}` 失败，后续仅输出到终端，不写入磁盘: {err:#}",
+                        config.general.log_file
+                    )
+                )
             );
             Logger::console_only(config.general.log_level)
         }

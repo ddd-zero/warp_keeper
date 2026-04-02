@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow};
+use chrono::Local;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::fmt;
@@ -6,9 +7,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Output};
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -310,12 +311,7 @@ impl Logger {
             return;
         }
 
-        let line = format!(
-            "[{}][{}] {}",
-            now_unix_seconds(),
-            level_name(level),
-            message
-        );
+        let line = format_log_line(level, message);
         if level == LogLevel::Error {
             eprintln!("{line}");
         } else {
@@ -328,6 +324,19 @@ impl Logger {
             let _ = writeln!(file, "{line}");
         }
     }
+}
+
+pub fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+pub fn format_log_line(level: LogLevel, message: &str) -> String {
+    format!(
+        "[{}][{}] {}",
+        now_local_timestamp(),
+        level_name(level),
+        message
+    )
 }
 
 pub fn read_config(path: &Path) -> Result<AppConfig> {
@@ -534,8 +543,10 @@ fn run_health_check(check: &HealthCheck, interface: &str) -> SingleCheckResult {
 }
 
 fn run_ping_check(target: &str, timeout_secs: u64, interface: &str) -> SingleCheckResult {
+    let name = format!("ping({target}@{interface})");
     let mut command = Command::new("ping");
     command
+        .arg("-n")
         .arg("-c")
         .arg("1")
         .arg("-W")
@@ -544,19 +555,25 @@ fn run_ping_check(target: &str, timeout_secs: u64, interface: &str) -> SingleChe
         .arg(interface)
         .arg(target);
 
-    match command.status() {
-        Ok(status) if status.success() => SingleCheckResult {
-            name: format!("ping({target}@{interface})"),
-            success: true,
-            detail: "连通".to_string(),
-        },
-        Ok(_) => SingleCheckResult {
-            name: format!("ping({target}@{interface})"),
+    match command.output() {
+        Ok(output) if output.status.success() => {
+            let detail = match parse_ping_latency_ms(&output) {
+                Some(latency_ms) => format!("连通，延迟 {latency_ms} ms"),
+                None => "连通".to_string(),
+            };
+            SingleCheckResult {
+                name,
+                success: true,
+                detail,
+            }
+        }
+        Ok(output) => SingleCheckResult {
+            name,
             success: false,
-            detail: "失败".to_string(),
+            detail: format_ping_failure(&output),
         },
         Err(err) => SingleCheckResult {
-            name: format!("ping({target}@{interface})"),
+            name,
             success: false,
             detail: format!("执行异常: {err}"),
         },
@@ -619,8 +636,10 @@ fn run_http_check(
         format!("{}:{}", parsed.host, parsed.port)
     };
     let request = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: warp-keeper/0.1\r\nConnection: close\r\nAccept: */*\r\n\r\n",
-        parsed.path, host_header
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: warp-keeper/{}\r\nConnection: close\r\nAccept: */*\r\n\r\n",
+        parsed.path,
+        host_header,
+        app_version()
     );
 
     if let Err(err) = stream.write_all(request.as_bytes()) {
@@ -886,11 +905,8 @@ fn default_reconnect_commands(client: WarpClient) -> Vec<String> {
     }
 }
 
-fn now_unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+fn now_local_timestamp() -> String {
+    Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string()
 }
 
 fn level_name(level: LogLevel) -> &'static str {
@@ -899,6 +915,61 @@ fn level_name(level: LogLevel) -> &'static str {
         LogLevel::Warn => "WARN",
         LogLevel::Info => "INFO",
         LogLevel::Debug => "DEBUG",
+    }
+}
+
+// ping 输出在不同实现间会有细微差异，这里只抓最稳定的 `time=` / `time<` 片段。
+fn parse_ping_latency_ms(output: &Output) -> Option<String> {
+    let text = combine_output_text(output);
+    for line in text.lines() {
+        if let Some(latency) = extract_ping_latency_token(line, "time=") {
+            return Some(latency);
+        }
+        if let Some(latency) = extract_ping_latency_token(line, "time<") {
+            return Some(format!("<{latency}"));
+        }
+    }
+    None
+}
+
+fn extract_ping_latency_token(line: &str, marker: &str) -> Option<String> {
+    let (_, rest) = line.split_once(marker)?;
+    let token = rest
+        .chars()
+        .take_while(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    if token.is_empty() { None } else { Some(token) }
+}
+
+fn format_ping_failure(output: &Output) -> String {
+    let summary = combine_output_text(output);
+    if summary.is_empty() {
+        return format!("失败{}", format_exit_code_suffix(output.status.code()));
+    }
+
+    format!(
+        "失败{}: {}",
+        format_exit_code_suffix(output.status.code()),
+        summary
+    )
+}
+
+fn combine_output_text(output: &Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let joined = format!("{stdout}\n{stderr}");
+    joined
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn format_exit_code_suffix(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("，退出码 {code}"),
+        None => String::new(),
     }
 }
 
@@ -1044,9 +1115,7 @@ fn update_reconnect_section(content: &str, reconnect: &ReconnectConfig) -> Optio
     let trailing_newline = content.ends_with('\n');
     let lines = content.lines().collect::<Vec<_>>();
 
-    let start = lines
-        .iter()
-        .position(|line| line.trim() == "[reconnect]")?;
+    let start = lines.iter().position(|line| line.trim() == "[reconnect]")?;
 
     let end = lines
         .iter()

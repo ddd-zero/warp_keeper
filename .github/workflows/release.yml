@@ -67,11 +67,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-archives
-          path: |
-            dist/${{ env.ARTIFACT_BASELINE }}
-            dist/${{ env.ARTIFACT_BASELINE }}.sha256
-            dist/${{ env.ARTIFACT_AVX2 }}
-            dist/${{ env.ARTIFACT_AVX2 }}.sha256
+          path: dist/
 
   release:
     runs-on: ubuntu-24.04
@@ -106,9 +102,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p upload
-          find dist -type f \
-            \( -name "${ARTIFACT_BASELINE}" -o -name "${ARTIFACT_BASELINE}.sha256" -o -name "${ARTIFACT_AVX2}" -o -name "${ARTIFACT_AVX2}.sha256" \) \
-            -exec cp {} upload/ \;
+          # 自动收集所有构建产物，后续新增型号时无需在这里重复补文件名。
+          find dist -type f -exec cp {} upload/ \;
           ls -lah upload
 
       - name: 创建或更新 Release
@@ -118,8 +113,25 @@ jobs:
           RELEASE_TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
+          # 先按基础产物名排序，再把对应 .sha256 紧跟在后面，避免展示顺序错位。
+          mapfile -t release_assets < <(find upload -maxdepth 1 -type f ! -name '*.sha256' -printf '%f\n' | sort)
+          if [[ ${#release_assets[@]} -eq 0 ]]; then
+            echo "未找到待发布产物" >&2
+            exit 1
+          fi
+
+          ordered_files=()
+          for asset in "${release_assets[@]}"; do
+            checksum="upload/${asset}.sha256"
+            if [[ ! -f "${checksum}" ]]; then
+              echo "缺少对应校验文件: ${checksum}" >&2
+              exit 1
+            fi
+            ordered_files+=("upload/${asset}" "${checksum}")
+          done
+
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" upload/* --clobber
+            gh release upload "${RELEASE_TAG}" "${ordered_files[@]}" --clobber
           else
-            gh release create "${RELEASE_TAG}" upload/* --title "${RELEASE_TAG}" --generate-notes --target "${GITHUB_SHA}"
+            gh release create "${RELEASE_TAG}" "${ordered_files[@]}" --title "${RELEASE_TAG}" --generate-notes --target "${GITHUB_SHA}"
           fi
