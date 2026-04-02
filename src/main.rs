@@ -10,6 +10,33 @@ use warp_keeper::{
     run_primary_check, run_reconnect_verify_checks,
 };
 
+#[derive(Debug, Clone, Copy)]
+enum ProcessExitCode {
+    Success = 0,
+    Failure = 1,
+    FatalConfig = 20,
+    FatalInterface = 21,
+    FatalStartupCheck = 22,
+}
+
+impl ProcessExitCode {
+    fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+#[derive(Debug)]
+struct AppRunError {
+    exit_code: ProcessExitCode,
+    error: anyhow::Error,
+}
+
+impl AppRunError {
+    fn new(exit_code: ProcessExitCode, error: anyhow::Error) -> Self {
+        Self { exit_code, error }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "warp-keeper", version, about = "WARP 断线检测与自动重连工具")]
 struct Cli {
@@ -34,20 +61,26 @@ fn main() -> ExitCode {
     match run(cli) {
         Ok(code) => ExitCode::from(code),
         Err(err) => {
-            eprintln!("{}", format_log_line(LogLevel::Error, &format!("{err:#}")));
-            ExitCode::from(1)
+            eprintln!(
+                "{}",
+                format_log_line(LogLevel::Error, &format!("{:#}", err.error))
+            );
+            ExitCode::from(err.exit_code.as_u8())
         }
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<u8> {
+fn run(cli: Cli) -> Result<u8, AppRunError> {
     let command = cli.command.unwrap_or(Commands::Run);
     match command {
         Commands::Detect => {
-            let mut config = read_config(&cli.config)?;
+            let mut config = map_app_error(read_config(&cli.config), ProcessExitCode::FatalConfig)?;
             let logger = make_logger(&config);
             log_runtime_banner(&logger, "detect");
-            let detected = detect_client_now(&cli.config, &mut config)?;
+            let detected = map_app_error(
+                detect_client_now(&cli.config, &mut config),
+                ProcessExitCode::Failure,
+            )?;
             match detected {
                 Some(client) => logger.info(&format!(
                     "识别到客户端: {}，已写入 reconnect.commands",
@@ -57,31 +90,41 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                     "未识别到客户端，已写入空的 warp_client 并清空 reconnect.commands，请手动填写",
                 ),
             }
-            Ok(0)
+            Ok(ProcessExitCode::Success.as_u8())
         }
         Commands::Check => run_check(&cli.config),
         Commands::Run => run_loop(&cli.config),
     }
 }
 
-fn run_check(config_path: &Path) -> anyhow::Result<u8> {
-    let config = read_config(config_path)?;
+fn run_check(config_path: &Path) -> Result<u8, AppRunError> {
+    let config = map_app_error(read_config(config_path), ProcessExitCode::FatalConfig)?;
     let logger = make_logger(&config);
     log_runtime_banner(&logger, "check");
 
-    let interface = resolve_interface_or_fail(&config, &logger)?;
+    let interface = map_app_error(
+        resolve_interface_or_fail(&config, &logger),
+        ProcessExitCode::FatalInterface,
+    )?;
     let result = run_primary_check(&config, &interface);
     log_check_result(&logger, &result, LogLevel::Info);
 
-    if result.success { Ok(0) } else { Ok(1) }
+    if result.success {
+        Ok(ProcessExitCode::Success.as_u8())
+    } else {
+        Ok(ProcessExitCode::Failure.as_u8())
+    }
 }
 
-fn run_loop(config_path: &Path) -> anyhow::Result<u8> {
-    let config = read_config(config_path)?;
+fn run_loop(config_path: &Path) -> Result<u8, AppRunError> {
+    let config = map_app_error(read_config(config_path), ProcessExitCode::FatalConfig)?;
     let logger = make_logger(&config);
     log_runtime_banner(&logger, "run");
 
-    let mut interface = resolve_interface_or_fail(&config, &logger)?;
+    let mut interface = map_app_error(
+        resolve_interface_or_fail(&config, &logger),
+        ProcessExitCode::FatalInterface,
+    )?;
     logger.info(&format!("使用 WARP 网卡: {interface}"));
     logger.info(&format!(
         "主检测: {}",
@@ -91,10 +134,13 @@ fn run_loop(config_path: &Path) -> anyhow::Result<u8> {
     let initial_primary = run_primary_check(&config, &interface);
     log_check_result(&logger, &initial_primary, LogLevel::Info);
     if !initial_primary.success {
-        return Err(anyhow::anyhow!(
-            "首次主检测失败，WARP 可能未正常运行，请先确认连接状态。检测结果: {} -> {}",
-            initial_primary.name,
-            initial_primary.detail
+        return Err(AppRunError::new(
+            ProcessExitCode::FatalStartupCheck,
+            anyhow::anyhow!(
+                "首次主检测失败，WARP 可能未正常运行，请先确认连接状态。检测结果: {} -> {}",
+                initial_primary.name,
+                initial_primary.detail
+            ),
         ));
     }
 
@@ -164,6 +210,13 @@ fn run_loop(config_path: &Path) -> anyhow::Result<u8> {
         consecutive_failures = 0;
         thread::sleep(Duration::from_secs(config.general.interval_secs));
     }
+}
+
+fn map_app_error<T>(
+    result: anyhow::Result<T>,
+    exit_code: ProcessExitCode,
+) -> Result<T, AppRunError> {
+    result.map_err(|error| AppRunError::new(exit_code, error))
 }
 
 fn resolve_interface_or_fail(config: &AppConfig, logger: &Logger) -> anyhow::Result<String> {

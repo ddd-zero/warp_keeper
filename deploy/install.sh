@@ -12,6 +12,18 @@ INSTALL_DAEMON=1
 FORCE_AVX2=0
 FORCE_BASELINE=0
 
+if [[ ( -t 1 || -t 2 ) && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  COLOR_GREEN=$'\033[32m'
+  COLOR_YELLOW=$'\033[33m'
+  COLOR_RED=$'\033[31m'
+  COLOR_RESET=$'\033[0m'
+else
+  COLOR_GREEN=''
+  COLOR_YELLOW=''
+  COLOR_RED=''
+  COLOR_RESET=''
+fi
+
 usage() {
   cat <<'EOF'
 用法:
@@ -27,20 +39,27 @@ EOF
 }
 
 log() {
-  printf '[INFO] %s\n' "$*"
+  printf '%b[INFO]%b %s\n' "${COLOR_GREEN}" "${COLOR_RESET}" "$*"
 }
 
 warn() {
-  printf '[WARN] %s\n' "$*" >&2
+  printf '%b[WARN]%b %s\n' "${COLOR_YELLOW}" "${COLOR_RESET}" "$*" >&2
 }
 
 die() {
-  printf '[ERROR] %s\n' "$*" >&2
+  printf '%b[ERROR]%b %s\n' "${COLOR_RED}" "${COLOR_RESET}" "$*" >&2
   exit 1
 }
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "缺少命令: $1"
+}
+
+download_or_die() {
+  local url="$1"
+  local output="$2"
+  local description="$3"
+  curl -fL "${url}" -o "${output}" || die "下载${description}失败: ${url}"
 }
 
 validate_tag() {
@@ -96,7 +115,7 @@ resolve_tag() {
 
   local latest_api
   latest_api="https://api.github.com/repos/${REPO}/releases/latest"
-  TAG="$(curl -fsSL "${latest_api}" | awk -F '"' '/"tag_name":/ {print $4; exit}')"
+  TAG="$(curl -fsSL "${latest_api}" | awk -F '"' '/"tag_name":/ {print $4; exit}')" || die "无法获取最新 release 标签: ${latest_api}"
   [[ -n "${TAG}" ]] || die "无法获取最新 release 标签，请检查仓库是否已发布 release"
   validate_tag "${TAG}"
   log "自动选择最新标签: ${TAG}"
@@ -162,17 +181,20 @@ download_asset() {
   fi
 
   log "下载: ${asset_name}"
-  curl -fL "${asset_url}" -o "${temp_dir}/${asset_name}"
-  curl -fL "${sha_url}" -o "${temp_dir}/${asset_name}.sha256"
+  download_or_die "${asset_url}" "${temp_dir}/${asset_name}" "发布产物 ${asset_name}"
+  download_or_die "${sha_url}" "${temp_dir}/${asset_name}.sha256" "校验文件 ${asset_name}.sha256"
 
   # 为什么额外放一份到 dist/：兼容历史发布中的 sha256 文件写法（可能记录为 dist/<文件名>）。
-  mkdir -p "${temp_dir}/dist"
-  cp -f "${temp_dir}/${asset_name}" "${temp_dir}/dist/${asset_name}"
+  mkdir -p "${temp_dir}/dist" || die "创建临时校验目录失败: ${temp_dir}/dist"
+  cp -f "${temp_dir}/${asset_name}" "${temp_dir}/dist/${asset_name}" || die "复制校验文件失败: ${asset_name}"
 
-  (
+  if ! (
     cd "${temp_dir}"
     sha256sum -c "${asset_name}.sha256"
-  )
+  ) >/dev/null 2>&1; then
+    die "校验失败: ${asset_name}.sha256"
+  fi
+  log "校验通过: ${asset_name}"
 }
 
 install_binary_and_assets() {
@@ -180,17 +202,17 @@ install_binary_and_assets() {
   local temp_dir="$2"
   [[ -s "${temp_dir}/${asset_name}" ]] || die "下载文件为空: ${asset_name}"
 
-  install -d "${INSTALL_BIN_DIR}" "${INSTALL_CONFIG_DIR}"
-  install -m 0755 "${temp_dir}/${asset_name}" "${INSTALL_BIN_DIR}/${PROGRAM}"
+  install -d "${INSTALL_BIN_DIR}" "${INSTALL_CONFIG_DIR}" || die "创建安装目录失败"
+  install -m 0755 "${temp_dir}/${asset_name}" "${INSTALL_BIN_DIR}/${PROGRAM}" || die "安装二进制失败: ${INSTALL_BIN_DIR}/${PROGRAM}"
 
   if [[ ! -f "${INSTALL_CONFIG_DIR}/config.toml" ]]; then
     local config_src="${temp_dir}/config.toml"
     local config_url="https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/config.toml"
     log "首次安装，下载配置模板: ${INSTALL_CONFIG_DIR}/config.toml"
-    curl -fL "${config_url}" -o "${config_src}" || die "下载配置模板失败: ${config_url}"
-    install -m 0644 "${config_src}" "${INSTALL_CONFIG_DIR}/config.toml"
+    download_or_die "${config_url}" "${config_src}" "配置模板"
+    install -m 0644 "${config_src}" "${INSTALL_CONFIG_DIR}/config.toml" || die "安装配置模板失败: ${INSTALL_CONFIG_DIR}/config.toml"
     log "执行客户端识别并写入 reconnect 配置"
-    "${INSTALL_BIN_DIR}/${PROGRAM}" detect --config "${INSTALL_CONFIG_DIR}/config.toml"
+    "${INSTALL_BIN_DIR}/${PROGRAM}" detect --config "${INSTALL_CONFIG_DIR}/config.toml" || die "执行 detect 失败"
   else
     # 为什么已有配置时不再执行 detect：升级安装必须保留用户手工调整的 toml，
     # 避免覆盖自定义 reconnect 配置或因环境瞬时状态导致探测结果回写。
@@ -204,15 +226,15 @@ install_systemd_daemon() {
   local unit_url="https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/systemd/warp-keeper.service"
   local service_name="warp-keeper.service"
   curl -fL "${unit_url}" -o "${unit_src}" || return 1
-  install -m 0644 "${unit_src}" "${SYSTEMD_UNIT_PATH}"
-  systemctl daemon-reload
-  systemctl enable "${service_name}" >/dev/null 2>&1
+  install -m 0644 "${unit_src}" "${SYSTEMD_UNIT_PATH}" || return 1
+  systemctl daemon-reload || return 1
+  systemctl enable "${service_name}" >/dev/null 2>&1 || return 1
 
   if systemctl is-active --quiet "${service_name}"; then
-    systemctl restart "${service_name}"
+    systemctl restart "${service_name}" || return 1
     log "已覆盖 systemd 守护并重启进程: ${service_name}"
   else
-    systemctl start "${service_name}"
+    systemctl start "${service_name}" || return 1
     log "已覆盖 systemd 守护并启动进程: ${service_name}"
   fi
 }
@@ -222,9 +244,9 @@ install_openrc_daemon() {
   local unit_src="${temp_dir}/warp-keeper.openrc"
   local unit_url="https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/openrc/warp-keeper"
   curl -fL "${unit_url}" -o "${unit_src}" || return 1
-  install -m 0755 "${unit_src}" "${OPENRC_UNIT_PATH}"
+  install -m 0755 "${unit_src}" "${OPENRC_UNIT_PATH}" || return 1
   rc-update add warp-keeper default >/dev/null 2>&1 || true
-  rc-service warp-keeper restart >/dev/null 2>&1 || rc-service warp-keeper start
+  rc-service warp-keeper restart >/dev/null 2>&1 || rc-service warp-keeper start || return 1
   log "已启用 OpenRC 守护: warp-keeper"
 }
 

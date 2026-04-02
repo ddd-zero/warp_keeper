@@ -7,7 +7,9 @@ command="/usr/local/bin/warp-keeper"
 command_args="run --config /etc/warp-keeper/config.toml"
 command_user="root:root"
 supervisor=supervise-daemon
-supervise_daemon_args="--respawn-delay 3 --respawn-max 0"
+# OpenRC 无法像 systemd 一样按退出码精细阻止重启，这里退而求其次：
+# 遇到连续启动失败时限制重启次数，避免无限拉起刷屏。
+supervise_daemon_args="--respawn-delay 3 --respawn-max 5 --respawn-period 300"
 
 depend() {
     need net

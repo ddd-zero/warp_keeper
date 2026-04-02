@@ -66,9 +66,9 @@ primary_check = { method = "ping", target = "8.8.8.8", timeout_secs = 1 }
 # 重连后检测列表：可配多个，必须全部成功
 reconnect_verify = [
   # TCP 检测（等价 tcping）
-  { method = "tcp", target = "1.1.1.1", port = 80, timeout_secs = 3 }
+  { method = "tcp", target = "1.1.1.1", port = 80, timeout_secs = 3 },
   # HTTP 检测仅支持 http://（不支持 https://，expect_contains关键字检测，大小写敏感，可不填）
-  { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" },
+  { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" }
 ]
 ```
 

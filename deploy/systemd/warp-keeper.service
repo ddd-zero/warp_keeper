@@ -2,11 +2,14 @@
 Description=warp-keeper WARP 保活服务
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/warp-keeper run --config /etc/warp-keeper/config.toml
-Restart=always
+Restart=on-failure
+RestartPreventExitStatus=20 21 22
 RestartSec=3
 User=root
 Group=root
