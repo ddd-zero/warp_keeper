@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -27,6 +27,51 @@ impl fmt::Display for WarpClient {
         };
         write!(f, "{text}")
     }
+}
+
+fn serialize_warp_client_option<S>(
+    value: &Option<WarpClient>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match value {
+        Some(client) => serializer.serialize_str(&client.to_string()),
+        None => serializer.serialize_str(""),
+    }
+}
+
+fn deserialize_warp_client_option<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<WarpClient>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    // 兼容历史文档里使用过的 `warp` 写法，读入后统一规范化为 `warp-wg`。
+    let client = match normalized.as_str() {
+        "warp-official" => WarpClient::WarpOfficial,
+        "warp-wg" | "warp" => WarpClient::WarpWg,
+        "warp-go" => WarpClient::WarpGo,
+        other => {
+            return Err(de::Error::unknown_variant(
+                other,
+                &["warp-official", "warp-wg", "warp-go", ""],
+            ));
+        }
+    };
+
+    Ok(Some(client))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
@@ -122,7 +167,11 @@ impl Default for GeneralConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReconnectConfig {
-    #[serde(default)]
+    #[serde(
+        default,
+        serialize_with = "serialize_warp_client_option",
+        deserialize_with = "deserialize_warp_client_option"
+    )]
     pub warp_client: Option<WarpClient>,
     #[serde(default)]
     pub commands: Vec<String>,
@@ -316,27 +365,6 @@ pub fn write_config(path: &Path, config: &AppConfig) -> Result<()> {
     let content = render_config(config)?;
     fs::write(path, content).with_context(|| format!("写入配置失败: {}", path.display()))?;
     Ok(())
-}
-
-pub fn load_or_create_config(path: &Path) -> Result<AppConfig> {
-    if path.exists() {
-        return read_config(path);
-    }
-    let config = AppConfig::default();
-    write_config(path, &config)?;
-    Ok(config)
-}
-
-pub fn init_config(path: &Path, force: bool) -> Result<AppConfig> {
-    if path.exists() && !force {
-        return Err(anyhow!(
-            "配置文件已存在: {}（如需覆盖请使用 --force）",
-            path.display()
-        ));
-    }
-    let config = AppConfig::default();
-    write_config(path, &config)?;
-    Ok(config)
 }
 
 pub fn render_config(config: &AppConfig) -> Result<String> {
@@ -986,5 +1014,54 @@ mod tests {
         config.reconnect.warp_client = Some(WarpClient::WarpGo);
         let text = render_config(&config).expect("序列化应成功");
         assert!(text.contains("warp-go"));
+    }
+
+    #[test]
+    fn render_config_should_write_empty_warp_client_when_unset() {
+        let config = AppConfig::default();
+        let text = render_config(&config).expect("序列化应成功");
+        assert!(text.contains("warp_client = \"\""));
+    }
+
+    #[test]
+    fn read_config_should_treat_empty_warp_client_as_none() {
+        let tmp_dir = tempfile::tempdir().expect("创建临时目录失败");
+        let path = tmp_dir.path().join("config.toml");
+        let content = r#"
+[general]
+interval_secs = 2
+failure_threshold = 3
+reconnect_cooldown_secs = 2
+shell = "/bin/bash"
+log_level = "info"
+log_file = "/var/log/warp-keeper.log"
+
+[reconnect]
+warp_client = ""
+commands = []
+
+[monitor.primary_check]
+method = "ping"
+target = "8.8.8.8"
+timeout_secs = 1
+
+[reconnect_verify]
+checks = [
+  { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" },
+  { method = "tcp", target = "1.1.1.1", port = 80, timeout_secs = 3 }
+]
+"#;
+        std::fs::write(&path, content).expect("写入配置文本失败");
+        let loaded = read_config(&path).expect("读配置失败");
+        assert_eq!(loaded.reconnect.warp_client, None);
+    }
+
+    #[test]
+    fn deploy_config_template_should_parse() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("deploy")
+            .join("config.toml");
+        let loaded = read_config(&path).expect("部署配置模板应可解析");
+        assert_eq!(loaded.reconnect.warp_client, None);
     }
 }

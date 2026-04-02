@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 use warp_keeper::{
     AppConfig, CheckReport, Logger, detect_client_now, execute_reconnect, find_warp_interface,
-    init_config, load_or_create_config, run_primary_check, run_reconnect_verify_checks,
+    read_config, run_primary_check, run_reconnect_verify_checks,
 };
 
 #[derive(Debug, Parser)]
@@ -24,11 +24,6 @@ enum Commands {
     Run,
     /// 仅执行一次 ICMP 检测
     Check,
-    /// 初始化配置文件
-    Init {
-        #[arg(long, default_value_t = false)]
-        force: bool,
-    },
     /// 手动执行一次客户端识别并写入重连命令
     Detect,
 }
@@ -47,13 +42,8 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<u8> {
     let command = cli.command.unwrap_or(Commands::Run);
     match command {
-        Commands::Init { force } => {
-            let _ = init_config(&cli.config, force)?;
-            println!("配置文件已初始化: {}", cli.config.display());
-            Ok(0)
-        }
         Commands::Detect => {
-            let mut config = load_or_create_config(&cli.config)?;
+            let mut config = read_config(&cli.config)?;
             let logger = make_logger(&config);
             let detected = detect_client_now(&cli.config, &mut config)?;
             match detected {
@@ -61,7 +51,9 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
                     "识别到客户端: {}，已写入 reconnect.commands",
                     client
                 )),
-                None => logger.warn("未识别到客户端，已清空 reconnect.commands，请手动填写"),
+                None => logger.warn(
+                    "未识别到客户端，已写入空的 warp_client 并清空 reconnect.commands，请手动填写",
+                ),
             }
             Ok(0)
         }
@@ -71,7 +63,7 @@ fn run(cli: Cli) -> anyhow::Result<u8> {
 }
 
 fn run_check(config_path: &Path) -> anyhow::Result<u8> {
-    let config = load_or_create_config(config_path)?;
+    let config = read_config(config_path)?;
     let logger = make_logger(&config);
 
     let interface = resolve_interface_or_fail(&config, &logger)?;
@@ -82,7 +74,7 @@ fn run_check(config_path: &Path) -> anyhow::Result<u8> {
 }
 
 fn run_loop(config_path: &Path) -> anyhow::Result<u8> {
-    let config = load_or_create_config(config_path)?;
+    let config = read_config(config_path)?;
     let logger = make_logger(&config);
 
     let mut interface = resolve_interface_or_fail(&config, &logger)?;

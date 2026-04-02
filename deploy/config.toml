@@ -1,0 +1,42 @@
+# warp-keeper 配置模板
+
+[general]
+# 主检测循环间隔（秒）
+interval_secs = 2
+# 连续失败多少次后触发重连
+failure_threshold = 3
+# 重连命令执行后额外等待（秒）
+reconnect_cooldown_secs = 2
+# 执行命令使用的 shell
+shell = "/bin/bash"
+# 日志等级: error/warn/info/debug
+log_level = "info"
+# 日志文件路径（若初始化失败，仅输出到终端）
+log_file = "/var/log/warp-keeper.log"
+
+[reconnect]
+# detect 识别出的客户端；未识别时保持空字符串
+warp_client = ""
+# 重连命令，按顺序串行执行，前一步失败则中止
+commands = []
+
+[monitor]
+# 可选：手动指定网卡名；不填则自动匹配包含 warp 的网卡
+# interface_name = "warp"
+
+[monitor.primary_check]
+# 主检测方法: ping / tcp / http
+method = "ping"
+# ping 目标
+target = "8.8.8.8"
+# 单次 ping 超时（秒）
+timeout_secs = 1
+
+[reconnect_verify]
+# 重连后检测列表：可配多个，必须全部成功
+checks = [
+  # HTTP 检测仅支持 http://（不支持 https://，expect_contains 大小写敏感，可不填）
+  { method = "http", url = "http://www.apple.com/library/test/success.html", timeout_secs = 3, expect_status = 200, expect_contains = "Success" },
+  # TCP 检测（等价 tcping）
+  { method = "tcp", target = "1.1.1.1", port = 80, timeout_secs = 3 }
+]

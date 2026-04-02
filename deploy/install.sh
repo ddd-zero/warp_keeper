@@ -216,10 +216,17 @@ install_binary_and_assets() {
   install -m 0755 "${temp_dir}/${asset_name}" "${INSTALL_BIN_DIR}/${PROGRAM}"
 
   if [[ ! -f "${INSTALL_CONFIG_DIR}/config.toml" ]]; then
-    log "首次安装，初始化配置: ${INSTALL_CONFIG_DIR}/config.toml"
-    "${INSTALL_BIN_DIR}/${PROGRAM}" init --config "${INSTALL_CONFIG_DIR}/config.toml"
+    local config_src="${temp_dir}/config.toml"
+    local config_url="https://raw.githubusercontent.com/${REPO}/${TAG}/deploy/config.toml"
+    log "首次安装，下载配置模板: ${INSTALL_CONFIG_DIR}/config.toml"
+    curl -fL "${config_url}" -o "${config_src}" || die "下载配置模板失败: ${config_url}"
+    install -m 0644 "${config_src}" "${INSTALL_CONFIG_DIR}/config.toml"
+    log "执行客户端识别并写入 reconnect 配置"
+    "${INSTALL_BIN_DIR}/${PROGRAM}" detect --config "${INSTALL_CONFIG_DIR}/config.toml"
   else
-    log "检测到已有配置，保留不覆盖: ${INSTALL_CONFIG_DIR}/config.toml"
+    # 为什么已有配置时不再执行 detect：升级安装必须保留用户手工调整的 toml，
+    # 避免覆盖自定义 reconnect 配置或因环境瞬时状态导致探测结果回写。
+    log "检测到已有配置，保留不覆盖且不重新执行 detect: ${INSTALL_CONFIG_DIR}/config.toml"
   fi
 }
 

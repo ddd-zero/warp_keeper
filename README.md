@@ -17,12 +17,11 @@
 - 识别命令为内置逻辑，不开放配置
 - `detect` 只做一次性识别：
   - 识别成功：把客户端写入 `reconnect.warp_client`，并写入对应 `reconnect.commands`
-  - 识别失败：清空 `reconnect.warp_client` 和 `reconnect.commands`（由你手动填写）
+  - 识别失败：写入空的 `reconnect.warp_client = ""`，并清空 `reconnect.commands`
 
 ## 常用命令
 
 ```bash
-warp-keeper init --config ./config.toml
 warp-keeper detect --config ./config.toml
 warp-keeper check --config ./config.toml
 warp-keeper run --config ./config.toml
@@ -53,7 +52,7 @@ log_level = "info"
 log_file = "/var/log/warp-keeper.log"
 
 [reconnect]
-# detect 识别出的客户端；值示例: warp-official / warp-wg / warp-go
+# detect 识别出的客户端；未识别时保持空字符串,值示例: warp-official / warp-wg / warp-go
 warp_client = "warp-go"
 # 重连命令，按顺序串行执行，前一步失败则中止
 commands = ["warp-go o", "warp-go o"]
@@ -66,7 +65,7 @@ commands = ["warp-go o", "warp-go o"]
 # 主检测方法: ping / tcp / http
 method = "ping"
 # ping 目标
-target = "1.1.1.1"
+target = "8.8.8.8"
 # 单次 ping 超时（秒）
 timeout_secs = 1
 
@@ -91,6 +90,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 发布包仅包含二进制文件，不再包含守护模板目录。安装脚本会按发布标签从仓库 `deploy/` 目录下载模板并注册守护：
 
+- `deploy/config.toml`：首次安装时下载到 `/etc/warp-keeper/config.toml`，随后自动执行一次 `detect`
 - `deploy/systemd/warp-keeper.service`：适用于 systemd 发行版（Debian/Ubuntu/CentOS 等）
 - `deploy/openrc/warp-keeper`：适用于 OpenRC 发行版（Alpine/Gentoo 等）
 
